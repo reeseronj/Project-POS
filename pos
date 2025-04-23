@@ -1,0 +1,781 @@
+# main.py - Entry point for the POS System
+
+import sys
+import os
+import datetime
+import uuid
+import pickle
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                             QHBoxLayout, QLabel, QLineEdit, QPushButton, 
+                             QTableWidget, QTableWidgetItem, QMessageBox,
+                             QDialog, QTabWidget, QFormLayout, QComboBox,
+                             QSpinBox, QDoubleSpinBox, QDateEdit, QScrollArea,
+                             QHeaderView, QStackedWidget, QFrame, QGridLayout)
+from PyQt5.QtCore import Qt, QSize, QDate
+from PyQt5.QtGui import QFont, QIcon
+
+
+# =================== MODEL CLASSES ===================
+
+class User:
+    def __init__(self, username, password, role="cashier"):
+        self.username = username
+        self.password = password  # In production, use proper password hashing
+        self.role = role  # "admin" or "cashier"
+        
+    def has_admin_rights(self):
+        return self.role == "admin"
+
+
+class Product:
+    def __init__(self, product_id, name, price, stock, category="General"):
+        self.product_id = product_id
+        self.name = name
+        self.price = price
+        self.stock = stock
+        self.category = category
+        
+    def update_stock(self, quantity):
+        """Update stock after a sale or restock"""
+        if self.stock + quantity < 0:
+            return False
+        self.stock += quantity
+        return True
+
+
+class CartItem:
+    def __init__(self, product, quantity=1):
+        self.product = product
+        self.quantity = quantity
+        
+    def get_subtotal(self):
+        return self.product.price * self.quantity
+
+
+class Cart:
+    def __init__(self):
+        self.items = []
+        self.discount_percent = 0
+        
+    def add_item(self, product, quantity=1):
+        # Check if product is already in cart, if so increment quantity
+        for item in self.items:
+            if item.product.product_id == product.product_id:
+                item.quantity += quantity
+                return True
+        
+        # Otherwise add as new item
+        self.items.append(CartItem(product, quantity))
+        return True
+        
+    def remove_item(self, product_id):
+        for i, item in enumerate(self.items):
+            if item.product.product_id == product_id:
+                del self.items[i]
+                return True
+        return False
+        
+    def update_quantity(self, product_id, quantity):
+        for item in self.items:
+            if item.product.product_id == product_id:
+                if quantity <= 0:
+                    return self.remove_item(product_id)
+                item.quantity = quantity
+                return True
+        return False
+        
+    def get_subtotal(self):
+        return sum(item.get_subtotal() for item in self.items)
+        
+    def apply_discount(self, percent):
+        self.discount_percent = percent
+        
+    def get_discount_amount(self):
+        return self.get_subtotal() * (self.discount_percent / 100)
+        
+    def get_total(self):
+        subtotal = self.get_subtotal()
+        discount = self.get_discount_amount()
+        tax = (subtotal - discount) * 0.05  # 5% tax rate
+        return subtotal - discount + tax
+        
+    def clear(self):
+        self.items = []
+        self.discount_percent = 0
+
+
+class Transaction:
+    def __init__(self, transaction_id, cart_items, subtotal, discount, tax, total, date=None):
+        self.transaction_id = transaction_id
+        self.cart_items = cart_items.copy()  # Copy of cart items at time of sale
+        self.subtotal = subtotal
+        self.discount = discount
+        self.tax = tax
+        self.total = total
+        self.date = date if date else datetime.datetime.now()
+        
+    def generate_receipt(self):
+        """Generate a formatted receipt for printing"""
+        receipt = []
+        receipt.append("-" * 40)
+        receipt.append("RECEIPT")
+        receipt.append(f"Transaction ID: {self.transaction_id}")
+        receipt.append(f"Date: {self.date.strftime('%Y-%m-%d %H:%M:%S')}")
+        receipt.append("-" * 40)
+        receipt.append(f"{'Item':<20} {'Qty':<5} {'Price':<7} {'Total':<8}")
+        receipt.append("-" * 40)
+        
+        for item in self.cart_items:
+            receipt.append(f"{item.product.name[:20]:<20} {item.quantity:<5} "
+                          f"${item.product.price:<6.2f} ${item.get_subtotal():<7.2f}")
+        
+        receipt.append("-" * 40)
+        receipt.append(f"Subtotal: ${self.subtotal:.2f}")
+        if self.discount > 0:
+            receipt.append(f"Discount: ${self.discount:.2f}")
+        receipt.append(f"Tax (5%): ${self.tax:.2f}")
+        receipt.append(f"TOTAL: ${self.total:.2f}")
+        receipt.append("-" * 40)
+        receipt.append("Thank you for shopping with us!")
+        receipt.append("-" * 40)
+        
+        return "\n".join(receipt)
+
+
+# =================== DATA MANAGEMENT CLASSES ===================
+
+class DataStore:
+    """Base class for data storage functionality"""
+    def __init__(self, filename):
+        self.filename = filename
+        self.data = []
+        self.load()
+    
+    def load(self):
+        """Load data from file"""
+        if os.path.exists(self.filename):
+            try:
+                with open(self.filename, 'rb') as f:
+                    self.data = pickle.load(f)
+            except Exception as e:
+                print(f"Error loading data: {e}")
+                self.data = []
+        else:
+            self.data = []
+    
+    def save(self):
+        """Save data to file"""
+        try:
+            with open(self.filename, 'wb') as f:
+                pickle.dump(self.data, f)
+            return True
+        except Exception as e:
+            print(f"Error saving data: {e}")
+            return False
+
+class UserStore(DataStore):
+    def __init__(self):
+        super().__init__('users.data')
+        # Create a default admin user if no users exist
+        if not self.data:
+            self.add_user(User("admin", "admin", "admin"))
+    
+    def add_user(self, user):
+        """Add a new user"""
+        # Check if username already exists
+        if any(u.username == user.username for u in self.data):
+            return False
+        self.data.append(user)
+        return self.save()
+    
+    def authenticate(self, username, password):
+        """Authenticate a user"""
+        for user in self.data:
+            if user.username == username and user.password == password:
+                return user
+        return None
+    
+    def get_users(self):
+        """Get all users"""
+        return self.data
+    
+    def update_user(self, username, new_password=None, new_role=None):
+        """Update user information"""
+        for user in self.data:
+            if user.username == username:
+                if new_password:
+                    user.password = new_password
+                if new_role:
+                    user.role = new_role
+                return self.save()
+        return False
+    
+    def delete_user(self, username):
+        """Delete a user"""
+        for i, user in enumerate(self.data):
+            if user.username == username:
+                del self.data[i]
+                return self.save()
+        return False
+
+class ProductStore(DataStore):
+    def __init__(self):
+        super().__init__('products.data')
+        # Add sample products if no products exist
+        if not self.data:
+            self.add_product(Product("P001", "Milk", 3.99, 50, "Dairy"))
+            self.add_product(Product("P002", "Bread", 2.49, 30, "Bakery"))
+            self.add_product(Product("P003", "Eggs", 4.99, 40, "Dairy"))
+    
+    def add_product(self, product):
+        """Add a new product"""
+        # Check if product ID already exists
+        if any(p.product_id == product.product_id for p in self.data):
+            return False
+        self.data.append(product)
+        return self.save()
+    
+    def get_product(self, product_id):
+        """Get a product by ID"""
+        for product in self.data:
+            if product.product_id == product_id:
+                return product
+        return None
+    
+    def get_products(self):
+        """Get all products"""
+        return self.data
+    
+    def update_product(self, product_id, name=None, price=None, stock=None, category=None):
+        """Update product information"""
+        for product in self.data:
+            if product.product_id == product_id:
+                if name:
+                    product.name = name
+                if price is not None:
+                    product.price = price
+                if stock is not None:
+                    product.stock = stock
+                if category:
+                    product.category = category
+                return self.save()
+        return False
+    
+    def delete_product(self, product_id):
+        """Delete a product"""
+        for i, product in enumerate(self.data):
+            if product.product_id == product_id:
+                del self.data[i]
+                return self.save()
+        return False
+    
+    def search_products(self, query):
+        """Search products by name or ID"""
+        query = query.lower()
+        return [p for p in self.data if query in p.product_id.lower() or query in p.name.lower()]
+    
+    def update_stock(self, product_id, quantity_change):
+        """Update product stock levels"""
+        for product in self.data:
+            if product.product_id == product_id:
+                result = product.update_stock(quantity_change)
+                if result:
+                    self.save()
+                return result
+        return False
+
+class TransactionStore(DataStore):
+    def __init__(self):
+        super().__init__('transactions.data')
+    
+    def add_transaction(self, transaction):
+        """Add a new transaction"""
+        self.data.append(transaction)
+        return self.save()
+    
+    def get_transaction(self, transaction_id):
+        """Get a transaction by ID"""
+        for transaction in self.data:
+            if transaction.transaction_id == transaction_id:
+                return transaction
+        return None
+    
+    def get_transactions(self):
+        """Get all transactions"""
+        return self.data
+    
+    def get_transactions_by_date(self, date):
+        """Get transactions by date"""
+        return [t for t in self.data if t.date.date() == date]
+    
+    def get_transactions_by_date_range(self, start_date, end_date):
+        """Get transactions within a date range"""
+        return [t for t in self.data if start_date <= t.date.date() <= end_date]
+
+
+# =================== GUI CLASSES ===================
+
+class LoginScreen(QWidget):
+    def __init__(self, user_store, on_login_success):
+        super().__init__()
+        self.user_store = user_store
+        self.on_login_success = on_login_success
+        self.setup_ui()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        
+        # Title label
+        title_label = QLabel("POS System Login")
+        title_label.setFont(QFont("Arial", 16, QFont.Bold))
+        title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # Form layout for login fields
+        form_layout = QFormLayout()
+        
+        self.username_input = QLineEdit()
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        
+        form_layout.addRow("Username:", self.username_input)
+        form_layout.addRow("Password:", self.password_input)
+        
+        layout.addLayout(form_layout)
+        
+        # Login button
+        login_button = QPushButton("Login")
+        login_button.clicked.connect(self.attempt_login)
+        layout.addWidget(login_button)
+        
+        self.setLayout(layout)
+        
+    def attempt_login(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+        
+        if not username or not password:
+            QMessageBox.warning(self, "Login Error", "Please enter both username and password.")
+            return
+        
+        user = self.user_store.authenticate(username, password)
+        if user:
+            self.on_login_success(user)
+        else:
+            QMessageBox.warning(self, "Login Error", "Invalid username or password.")
+
+
+class ProductManagementScreen(QWidget):
+    def __init__(self, product_store):
+        super().__init__()
+        self.product_store = product_store
+        self.setup_ui()
+        self.load_products()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        
+        # Title
+        title_label = QLabel("Product Management")
+        title_label.setFont(QFont("Arial", 14, QFont.Bold))
+        layout.addWidget(title_label)
+        
+        # Search bar
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search products...")
+        search_button = QPushButton("Search")
+        search_button.clicked.connect(self.search_products)
+        search_layout.addWidget(self.search_input)
+        search_layout.addWidget(search_button)
+        layout.addLayout(search_layout)
+        
+        # Products table
+        self.products_table = QTableWidget()
+        self.products_table.setColumnCount(5)
+        self.products_table.setHorizontalHeaderLabels(["ID", "Name", "Price", "Stock", "Category"])
+        self.products_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.products_table)
+        
+        # Buttons for CRUD operations
+        buttons_layout = QHBoxLayout()
+        add_button = QPushButton("Add Product")
+        add_button.clicked.connect(self.show_add_product_dialog)
+        edit_button = QPushButton("Edit Product")
+        edit_button.clicked.connect(self.show_edit_product_dialog)
+        delete_button = QPushButton("Delete Product")
+        delete_button.clicked.connect(self.delete_product)
+        
+        buttons_layout.addWidget(add_button)
+        buttons_layout.addWidget(edit_button)
+        buttons_layout.addWidget(delete_button)
+        layout.addLayout(buttons_layout)
+        
+        self.setLayout(layout)
+        
+    def load_products(self):
+        products = self.product_store.get_products()
+        self.products_table.setRowCount(len(products))
+        
+        for row, product in enumerate(products):
+            self.products_table.setItem(row, 0, QTableWidgetItem(product.product_id))
+            self.products_table.setItem(row, 1, QTableWidgetItem(product.name))
+            self.products_table.setItem(row, 2, QTableWidgetItem(f"${product.price:.2f}"))
+            self.products_table.setItem(row, 3, QTableWidgetItem(str(product.stock)))
+            self.products_table.setItem(row, 4, QTableWidgetItem(product.category))
+            
+    def search_products(self):
+        query = self.search_input.text()
+        if not query:
+            self.load_products()
+            return
+            
+        products = self.product_store.search_products(query)
+        self.products_table.setRowCount(len(products))
+        
+        for row, product in enumerate(products):
+            self.products_table.setItem(row, 0, QTableWidgetItem(product.product_id))
+            self.products_table.setItem(row, 1, QTableWidgetItem(product.name))
+            self.products_table.setItem(row, 2, QTableWidgetItem(f"${product.price:.2f}"))
+            self.products_table.setItem(row, 3, QTableWidgetItem(str(product.stock)))
+            self.products_table.setItem(row, 4, QTableWidgetItem(product.category))
+            
+    def show_add_product_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Product")
+        
+        layout = QFormLayout()
+        
+        product_id_input = QLineEdit()
+        name_input = QLineEdit()
+        price_input = QDoubleSpinBox()
+        price_input.setRange(0.01, 9999.99)
+        price_input.setValue(1.00)
+        price_input.setPrefix("$ ")
+        stock_input = QSpinBox()
+        stock_input.setRange(0, 9999)
+        category_input = QComboBox()
+        category_input.addItems(["General", "Dairy", "Bakery", "Produce", "Meat", "Beverage", "Snacks"])
+        category_input.setEditable(True)
+        
+        layout.addRow("Product ID:", product_id_input)
+        layout.addRow("Name:", name_input)
+        layout.addRow("Price:", price_input)
+        layout.addRow("Stock:", stock_input)
+        layout.addRow("Category:", category_input)
+        
+        buttons_layout = QHBoxLayout()
+        ok_button = QPushButton("Add")
+        cancel_button = QPushButton("Cancel")
+        
+        ok_button.clicked.connect(lambda: self.add_product(
+            product_id_input.text(),
+            name_input.text(),
+            price_input.value(),
+            stock_input.value(),
+            category_input.currentText(),
+            dialog
+        ))
+        cancel_button.clicked.connect(dialog.reject)
+        
+        buttons_layout.addWidget(ok_button)
+        buttons_layout.addWidget(cancel_button)
+        layout.addRow("", buttons_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+        
+    def add_product(self, product_id, name, price, stock, category, dialog):
+        if not product_id or not name:
+            QMessageBox.warning(dialog, "Input Error", "Product ID and Name are required.")
+            return
+            
+        product = Product(product_id, name, price, stock, category)
+        if self.product_store.add_product(product):
+            dialog.accept()
+            self.load_products()
+        else:
+            QMessageBox.warning(dialog, "Add Error", "Product ID already exists.")
+            
+    def show_edit_product_dialog(self):
+        selected_row = self.products_table.currentRow()
+        if selected_row < 0:
+            QMessageBox.warning(self, "Selection Error", "Please select a product to edit.")
+            return
+            
+        product_id = self.products_table.item(selected_row, 0).text()
+        product = self.product_store.get_product(product_id)
+        
+        if not product:
+            QMessageBox.warning(self, "Product Error", "Product not found.")
+            return
+            
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Product")
+        
+        layout = QFormLayout()
+        
+        product_id_label = QLabel(product_id)
+        name_input = QLineEdit(product.name)
+        price_input = QDoubleSpinBox()
+        price_input.setRange(0.01, 9999.99)
+        price_input.setValue(product.price)
+        price_input.setPrefix("$ ")
+        stock_input = QSpinBox()
+        stock_input.setRange(0, 9999)
+        stock_input.setValue(product.stock)
+        category_input = QComboBox()
+        category_input.addItems(["General", "Dairy", "Bakery", "Produce", "Meat", "Beverage", "Snacks"])
+        category_input.setEditable(True)
+        category_input.setCurrentText(product.category)
+        
+        layout.addRow("Product ID:", product_id_label)
+        layout.addRow("Name:", name_input)
+        layout.addRow("Price:", price_input)
+        layout.addRow("Stock:", stock_input)
+        layout.addRow("Category:", category_input)
+        
+        buttons_layout = QHBoxLayout()
+        ok_button = QPushButton("Update")
+        cancel_button = QPushButton("Cancel")
+        
+        ok_button.clicked.connect(lambda: self.update_product(
+            product_id,
+            name_input.text(),
+            price_input.value(),
+            stock_input.value(),
+            category_input.currentText(),
+            dialog
+        ))
+        cancel_button.clicked.connect(dialog.reject)
+        
+        buttons_layout.addWidget(ok_button)
+        buttons_layout.addWidget(cancel_button)
+        layout.addRow("", buttons_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+        
+    def update_product(self, product_id, name, price, stock, category, dialog):
+        if not name:
+            QMessageBox.warning(dialog, "Input Error", "Name is required.")
+            return
+            
+        if self.product_store.update_product(product_id, name, price, stock, category):
+            dialog.accept()
+            self.load_products()
+        else:
+            QMessageBox.warning(dialog, "Update Error", "Failed to update product.")
+            
+    def delete_product(self):
+        selected_row = self.products_table.currentRow()
+        if selected_row < 0:
+            QMessageBox.warning(self, "Selection Error", "Please select a product to delete.")
+            return
+            
+        product_id = self.products_table.item(selected_row, 0).text()
+        
+        reply = QMessageBox.question(
+            self, "Confirm Delete", 
+            f"Are you sure you want to delete product {product_id}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.product_store.delete_product(product_id):
+                self.load_products()
+            else:
+                QMessageBox.warning(self, "Delete Error", "Failed to delete product.")
+
+
+class SalesScreen(QWidget):
+    def __init__(self, product_store, transaction_store):
+        super().__init__()
+        self.product_store = product_store
+        self.transaction_store = transaction_store
+        self.cart = Cart()
+        self.setup_ui()
+        self.load_products()
+        
+    def setup_ui(self):
+        layout = QHBoxLayout()
+        
+        # Left side - Products section
+        products_widget = QWidget()
+        products_layout = QVBoxLayout()
+        
+        # Products search and list
+        products_search_layout = QHBoxLayout()
+        self.products_search_input = QLineEdit()
+        self.products_search_input.setPlaceholderText("Search products...")
+        products_search_button = QPushButton("Search")
+        products_search_button.clicked.connect(self.search_products)
+        products_search_layout.addWidget(self.products_search_input)
+        products_search_layout.addWidget(products_search_button)
+        products_layout.addLayout(products_search_layout)
+        
+        self.products_table = QTableWidget()
+        self.products_table.setColumnCount(4)
+        self.products_table.setHorizontalHeaderLabels(["ID", "Name", "Price", "Stock"])
+        self.products_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.products_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.products_table.doubleClicked.connect(self.add_to_cart)
+        products_layout.addWidget(self.products_table)
+        
+        # Add to cart button
+        add_button = QPushButton("Add to Cart")
+        add_button.clicked.connect(self.add_to_cart)
+        products_layout.addWidget(add_button)
+        
+        products_widget.setLayout(products_layout)
+        layout.addWidget(products_widget)
+        
+        # Right side - Cart section
+        cart_widget = QWidget()
+        cart_layout = QVBoxLayout()
+        
+        # Cart header
+        cart_header = QLabel("Current Cart")
+        cart_header.setFont(QFont("Arial", 14, QFont.Bold))
+        cart_layout.addWidget(cart_header)
+        
+        # Cart table
+        self.cart_table = QTableWidget()
+        self.cart_table.setColumnCount(5)
+        self.cart_table.setHorizontalHeaderLabels(["ID", "Name", "Price", "Quantity", "Subtotal"])
+        self.cart_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        cart_layout.addWidget(self.cart_table)
+        
+        # Cart controls
+        cart_buttons_layout = QHBoxLayout()
+        update_button = QPushButton("Update Quantity")
+        update_button.clicked.connect(self.show_update_quantity_dialog)
+        remove_button = QPushButton("Remove Item")
+        remove_button.clicked.connect(self.remove_from_cart)
+        clear_button = QPushButton("Clear Cart")
+        clear_button.clicked.connect(self.clear_cart)
+        
+        cart_buttons_layout.addWidget(update_button)
+        cart_buttons_layout.addWidget(remove_button)
+        cart_buttons_layout.addWidget(clear_button)
+        cart_layout.addLayout(cart_buttons_layout)
+        
+        # Discount
+        discount_layout = QHBoxLayout()
+        discount_layout.addWidget(QLabel("Discount (%):"))
+        self.discount_input = QSpinBox()
+        self.discount_input.setRange(0, 100)
+        self.discount_input.valueChanged.connect(self.update_totals)
+        discount_layout.addWidget(self.discount_input)
+        cart_layout.addLayout(discount_layout)
+        
+        # Totals
+        totals_layout = QFormLayout()
+        self.subtotal_label = QLabel("$0.00")
+        self.discount_amount_label = QLabel("$0.00")
+        self.tax_label = QLabel("$0.00")
+        self.total_label = QLabel("$0.00")
+        self.total_label.setFont(QFont("Arial", 12, QFont.Bold))
+        
+        totals_layout.addRow("Subtotal:", self.subtotal_label)
+        totals_layout.addRow("Discount:", self.discount_amount_label)
+        totals_layout.addRow("Tax (5%):", self.tax_label)
+        totals_layout.addRow("Total:", self.total_label)
+        cart_layout.addLayout(totals_layout)
+        
+        # Checkout button
+        checkout_button = QPushButton("Checkout")
+        checkout_button.setFont(QFont("Arial", 12, QFont.Bold))
+        checkout_button.clicked.connect(self.checkout)
+        cart_layout.addWidget(checkout_button)
+        
+        cart_widget.setLayout(cart_layout)
+        layout.addWidget(cart_widget)
+        
+        self.setLayout(layout)
+        
+    def load_products(self):
+        products = self.product_store.get_products()
+        self.products_table.setRowCount(len(products))
+        
+        for row, product in enumerate(products):
+            self.products_table.setItem(row, 0, QTableWidgetItem(product.product_id))
+            self.products_table.setItem(row, 1, QTableWidgetItem(product.name))
+            self.products_table.setItem(row, 2, QTableWidgetItem(f"${product.price:.2f}"))
+            self.products_table.setItem(row, 3, QTableWidgetItem(str(product.stock)))
+            
+    def search_products(self):
+        query = self.products_search_input.text()
+        if not query:
+            self.load_products()
+            return
+            
+        products = self.product_store.search_products(query)
+        self.products_table.setRowCount(len(products))
+        
+        for row, product in enumerate(products):
+            self.products_table.setItem(row, 0, QTableWidgetItem(product.product_id))
+            self.products_table.setItem(row, 1, QTableWidgetItem(product.name))
+            self.products_table.setItem(row, 2, QTableWidgetItem(f"${product.price:.2f}"))
+            self.products_table.setItem(row, 3, QTableWidgetItem(str(product.stock)))
+            
+    def add_to_cart(self):
+        selected_row = self.products_table.currentRow()
+        if selected_row < 0:
+            QMessageBox.warning(self, "Selection Error", "Please select a product to add to cart.")
+            return
+            
+        product_id = self.products_table.item(selected_row, 0).text()
+        product = self.product_store.get_product(product_id)
+        
+        if not product:
+            QMessageBox.warning(self, "Product Error", "Product not found.")
+            return
+            
+        if product.stock <= 0:
+            QMessageBox.warning(self, "Stock Error", "Product is out of stock.")
+            return
+            
+        # Show dialog for quantity
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add to Cart")
+        
+        layout = QFormLayout()
+        
+        quantity_input = QSpinBox()
+        quantity_input.setRange(1, product.stock)
+        quantity_input.setValue(1)
+        
+        layout.addRow(f"Adding: {product.name}", QLabel(""))
+        layout.addRow("Quantity:", quantity_input)
+        
+        buttons_layout = QHBoxLayout()
+        ok_button = QPushButton("Add")
+        cancel_button = QPushButton("Cancel")
+        
+        ok_button.clicked.connect(lambda: self.add_to_cart_with_quantity(
+            product, quantity_input.value(), dialog
+        ))
+        cancel_button.clicked.connect(dialog.reject)
+        
+        buttons_layout.addWidget(ok_button)
+        buttons_layout.addWidget(cancel_button)
+        layout.addRow("", buttons_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+        
+    def add_to_cart_with_quantity(self, product, quantity, dialog):
+        self.cart.add_item(product, quantity)
+        dialog.accept()
+        self.update_cart_table()
+        self.update_totals()
+        
+    def update_cart_table(self):
+        items = self.cart.items
+        self.cart_table.setRowCount(len(items))
+        
+        for row, item in enumerate(items):
+            self.cart_table.setItem(row, 0, QTableWidgetItem(item.product.product_id))
+            self.cart_table.setItem(row, 1, QTableWidgetItem(item.product.name))
+            self.cart_table.setItem(row, 2, QTableWidgetItem(f"${item.product.price:.2f
