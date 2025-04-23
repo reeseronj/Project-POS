@@ -1,0 +1,574 @@
+self.cart_table.setItem(row, 2, QTableWidgetItem(f"${item.product.price:.2f}"))
+            self.cart_table.setItem(row, 3, QTableWidgetItem(str(item.quantity)))
+            self.cart_table.setItem(row, 4, QTableWidgetItem(f"${item.get_subtotal():.2f}"))
+            
+    def show_update_quantity_dialog(self):
+        selected_row = self.cart_table.currentRow()
+        if selected_row < 0:
+            QMessageBox.warning(self, "Selection Error", "Please select an item to update.")
+            return
+            
+        product_id = self.cart_table.item(selected_row, 0).text()
+        
+        # Find the cart item
+        cart_item = None
+        for item in self.cart.items:
+            if item.product.product_id == product_id:
+                cart_item = item
+                break
+                
+        if not cart_item:
+            QMessageBox.warning(self, "Item Error", "Item not found in cart.")
+            return
+            
+        # Show dialog for updating quantity
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Update Quantity")
+        
+        layout = QFormLayout()
+        
+        quantity_input = QSpinBox()
+        quantity_input.setRange(1, cart_item.product.stock)
+        quantity_input.setValue(cart_item.quantity)
+        
+        layout.addRow(f"Item: {cart_item.product.name}", QLabel(""))
+        layout.addRow("New Quantity:", quantity_input)
+        
+        buttons_layout = QHBoxLayout()
+        ok_button = QPushButton("Update")
+        cancel_button = QPushButton("Cancel")
+        
+        ok_button.clicked.connect(lambda: self.update_cart_quantity(
+            product_id, quantity_input.value(), dialog
+        ))
+        cancel_button.clicked.connect(dialog.reject)
+        
+        buttons_layout.addWidget(ok_button)
+        buttons_layout.addWidget(cancel_button)
+        layout.addRow("", buttons_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+        
+    def update_cart_quantity(self, product_id, quantity, dialog):
+        if self.cart.update_quantity(product_id, quantity):
+            dialog.accept()
+            self.update_cart_table()
+            self.update_totals()
+        else:
+            QMessageBox.warning(dialog, "Update Error", "Failed to update quantity.")
+            
+    def remove_from_cart(self):
+        selected_row = self.cart_table.currentRow()
+        if selected_row < 0:
+            QMessageBox.warning(self, "Selection Error", "Please select an item to remove.")
+            return
+            
+        product_id = self.cart_table.item(selected_row, 0).text()
+        
+        if self.cart.remove_item(product_id):
+            self.update_cart_table()
+            self.update_totals()
+        else:
+            QMessageBox.warning(self, "Remove Error", "Failed to remove item from cart.")
+            
+    def clear_cart(self):
+        if not self.cart.items:
+            return
+            
+        reply = QMessageBox.question(
+            self, "Confirm Clear Cart", 
+            "Are you sure you want to clear the cart?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.cart.clear()
+            self.update_cart_table()
+            self.update_totals()
+            
+    def update_totals(self):
+        discount_percent = self.discount_input.value()
+        self.cart.apply_discount(discount_percent)
+        
+        subtotal = self.cart.get_subtotal()
+        discount = self.cart.get_discount_amount()
+        tax = (subtotal - discount) * 0.05  # 5% tax
+        total = subtotal - discount + tax
+        
+        self.subtotal_label.setText(f"${subtotal:.2f}")
+        self.discount_amount_label.setText(f"${discount:.2f}")
+        self.tax_label.setText(f"${tax:.2f}")
+        self.total_label.setText(f"${total:.2f}")
+        
+    def checkout(self):
+        if not self.cart.items:
+            QMessageBox.warning(self, "Checkout Error", "Cart is empty.")
+            return
+            
+        reply = QMessageBox.question(
+            self, "Confirm Checkout", 
+            "Complete this transaction?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # Generate transaction ID
+            transaction_id = f"T{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+            
+            # Get values from cart
+            subtotal = self.cart.get_subtotal()
+            discount = self.cart.get_discount_amount()
+            tax = (subtotal - discount) * 0.05
+            total = subtotal - discount + tax
+            
+            # Create transaction
+            transaction = Transaction(
+                transaction_id=transaction_id,
+                cart_items=self.cart.items,
+                subtotal=subtotal,
+                discount=discount,
+                tax=tax,
+                total=total
+            )
+            
+            # Update inventory
+            for item in self.cart.items:
+                self.product_store.update_stock(item.product.product_id, -item.quantity)
+            
+            # Save transaction
+            self.transaction_store.add_transaction(transaction)
+            
+            # Show receipt
+            self.show_receipt(transaction)
+            
+            # Clear cart
+            self.cart.clear()
+            self.update_cart_table()
+            self.update_totals()
+            
+            # Reload products table to reflect updated stock
+            self.load_products()
+            
+    def show_receipt(self, transaction):
+        receipt_dialog = QDialog(self)
+        receipt_dialog.setWindowTitle("Receipt")
+        receipt_dialog.resize(400, 600)
+        
+        layout = QVBoxLayout()
+        
+        receipt_text = QLabel(transaction.generate_receipt().replace("\n", "<br>"))
+        receipt_text.setTextFormat(Qt.RichText)
+        receipt_text.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(receipt_text)
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+        
+        print_button = QPushButton("Print")
+        print_button.clicked.connect(lambda: self.print_receipt(transaction))
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(receipt_dialog.accept)
+        
+        buttons_layout = QHBoxLayout()
+        buttons_layout.addWidget(print_button)
+        buttons_layout.addWidget(close_button)
+        layout.addLayout(buttons_layout)
+        
+        receipt_dialog.setLayout(layout)
+        receipt_dialog.exec_()
+        
+    def print_receipt(self, transaction):
+        # In a real application, this would send the receipt to a printer
+        # For this demo, we'll just show a message
+        QMessageBox.information(self, "Print Receipt", "Receipt sent to printer.")
+
+
+class TransactionHistoryScreen(QWidget):
+    def __init__(self, transaction_store):
+        super().__init__()
+        self.transaction_store = transaction_store
+        self.setup_ui()
+        self.load_transactions()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        
+        # Title
+        title_label = QLabel("Transaction History")
+        title_label.setFont(QFont("Arial", 14, QFont.Bold))
+        layout.addWidget(title_label)
+        
+        # Date filter
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Date Range:"))
+        
+        self.start_date = QDateEdit()
+        self.start_date.setCalendarPopup(True)
+        self.start_date.setDate(QDate.currentDate().addDays(-30))
+        filter_layout.addWidget(self.start_date)
+        
+        filter_layout.addWidget(QLabel("to"))
+        
+        self.end_date = QDateEdit()
+        self.end_date.setCalendarPopup(True)
+        self.end_date.setDate(QDate.currentDate())
+        filter_layout.addWidget(self.end_date)
+        
+        search_button = QPushButton("Filter")
+        search_button.clicked.connect(self.filter_transactions)
+        filter_layout.addWidget(search_button)
+        
+        layout.addLayout(filter_layout)
+        
+        # Transaction search
+        search_layout = QHBoxLayout()
+        self.transaction_id_input = QLineEdit()
+        self.transaction_id_input.setPlaceholderText("Search by Transaction ID...")
+        search_id_button = QPushButton("Search")
+        search_id_button.clicked.connect(self.search_transaction)
+        search_layout.addWidget(self.transaction_id_input)
+        search_layout.addWidget(search_id_button)
+        layout.addLayout(search_layout)
+        
+        # Transactions table
+        self.transactions_table = QTableWidget()
+        self.transactions_table.setColumnCount(5)
+        self.transactions_table.setHorizontalHeaderLabels(["ID", "Date", "Items", "Total", "Actions"])
+        self.transactions_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.transactions_table)
+        
+        self.setLayout(layout)
+        
+    def load_transactions(self):
+        transactions = self.transaction_store.get_transactions()
+        self.display_transactions(transactions)
+            
+    def display_transactions(self, transactions):
+        self.transactions_table.setRowCount(len(transactions))
+        
+        for row, transaction in enumerate(transactions):
+            # ID
+            self.transactions_table.setItem(row, 0, QTableWidgetItem(transaction.transaction_id))
+            
+            # Date
+            date_str = transaction.date.strftime("%Y-%m-%d %H:%M:%S")
+            self.transactions_table.setItem(row, 1, QTableWidgetItem(date_str))
+            
+            # Items
+            items_count = sum(item.quantity for item in transaction.cart_items)
+            items_text = f"{items_count} items"
+            self.transactions_table.setItem(row, 2, QTableWidgetItem(items_text))
+            
+            # Total
+            self.transactions_table.setItem(row, 3, QTableWidgetItem(f"${transaction.total:.2f}"))
+            
+            # View button
+            view_button = QPushButton("View")
+            view_button.clicked.connect(lambda checked, t=transaction: self.view_transaction(t))
+            self.transactions_table.setCellWidget(row, 4, view_button)
+            
+    def filter_transactions(self):
+        start_date = self.start_date.date().toPyDate()
+        end_date = self.end_date.date().toPyDate()
+        
+        filtered_transactions = self.transaction_store.get_transactions_by_date_range(start_date, end_date)
+        self.display_transactions(filtered_transactions)
+        
+    def search_transaction(self):
+        transaction_id = self.transaction_id_input.text()
+        if not transaction_id:
+            self.load_transactions()
+            return
+            
+        transaction = self.transaction_store.get_transaction(transaction_id)
+        if transaction:
+            self.display_transactions([transaction])
+        else:
+            QMessageBox.warning(self, "Search Error", "Transaction not found.")
+            self.transactions_table.setRowCount(0)
+            
+    def view_transaction(self, transaction):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Transaction {transaction.transaction_id}")
+        dialog.resize(400, 600)
+        
+        layout = QVBoxLayout()
+        
+        # Display receipt
+        receipt_text = QLabel(transaction.generate_receipt().replace("\n", "<br>"))
+        receipt_text.setTextFormat(Qt.RichText)
+        receipt_text.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(receipt_text)
+        scroll_area.setWidgetResizable(True)
+        layout.addWidget(scroll_area)
+        
+        # Close button
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+
+
+class UserManagementScreen(QWidget):
+    def __init__(self, user_store):
+        super().__init__()
+        self.user_store = user_store
+        self.setup_ui()
+        self.load_users()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        
+        # Title
+        title_label = QLabel("User Management")
+        title_label.setFont(QFont("Arial", 14, QFont.Bold))
+        layout.addWidget(title_label)
+        
+        # Users table
+        self.users_table = QTableWidget()
+        self.users_table.setColumnCount(2)
+        self.users_table.setHorizontalHeaderLabels(["Username", "Role"])
+        self.users_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.users_table)
+        
+        # Buttons for user management
+        buttons_layout = QHBoxLayout()
+        add_button = QPushButton("Add User")
+        add_button.clicked.connect(self.show_add_user_dialog)
+        edit_button = QPushButton("Change Password")
+        edit_button.clicked.connect(self.show_change_password_dialog)
+        delete_button = QPushButton("Delete User")
+        delete_button.clicked.connect(self.delete_user)
+        
+        buttons_layout.addWidget(add_button)
+        buttons_layout.addWidget(edit_button)
+        buttons_layout.addWidget(delete_button)
+        layout.addLayout(buttons_layout)
+        
+        self.setLayout(layout)
+        
+    def load_users(self):
+        users = self.user_store.get_users()
+        self.users_table.setRowCount(len(users))
+        
+        for row, user in enumerate(users):
+            self.users_table.setItem(row, 0, QTableWidgetItem(user.username))
+            self.users_table.setItem(row, 1, QTableWidgetItem(user.role))
+            
+    def show_add_user_dialog(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add User")
+        
+        layout = QFormLayout()
+        
+        username_input = QLineEdit()
+        password_input = QLineEdit()
+        password_input.setEchoMode(QLineEdit.Password)
+        confirm_password_input = QLineEdit()
+        confirm_password_input.setEchoMode(QLineEdit.Password)
+        role_input = QComboBox()
+        role_input.addItems(["cashier", "admin"])
+        
+        layout.addRow("Username:", username_input)
+        layout.addRow("Password:", password_input)
+        layout.addRow("Confirm Password:", confirm_password_input)
+        layout.addRow("Role:", role_input)
+        
+        buttons_layout = QHBoxLayout()
+        ok_button = QPushButton("Add")
+        cancel_button = QPushButton("Cancel")
+        
+        ok_button.clicked.connect(lambda: self.add_user(
+            username_input.text(),
+            password_input.text(),
+            confirm_password_input.text(),
+            role_input.currentText(),
+            dialog
+        ))
+        cancel_button.clicked.connect(dialog.reject)
+        
+        buttons_layout.addWidget(ok_button)
+        buttons_layout.addWidget(cancel_button)
+        layout.addRow("", buttons_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+        
+    def add_user(self, username, password, confirm_password, role, dialog):
+        if not username or not password:
+            QMessageBox.warning(dialog, "Input Error", "Username and password are required.")
+            return
+            
+        if password != confirm_password:
+            QMessageBox.warning(dialog, "Password Error", "Passwords do not match.")
+            return
+            
+        user = User(username, password, role)
+        if self.user_store.add_user(user):
+            dialog.accept()
+            self.load_users()
+        else:
+            QMessageBox.warning(dialog, "Add Error", "Username already exists.")
+            
+    def show_change_password_dialog(self):
+        selected_row = self.users_table.currentRow()
+        if selected_row < 0:
+            QMessageBox.warning(self, "Selection Error", "Please select a user.")
+            return
+            
+        username = self.users_table.item(selected_row, 0).text()
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Change Password")
+        
+        layout = QFormLayout()
+        
+        username_label = QLabel(username)
+        new_password_input = QLineEdit()
+        new_password_input.setEchoMode(QLineEdit.Password)
+        confirm_password_input = QLineEdit()
+        confirm_password_input.setEchoMode(QLineEdit.Password)
+        
+        layout.addRow("Username:", username_label)
+        layout.addRow("New Password:", new_password_input)
+        layout.addRow("Confirm Password:", confirm_password_input)
+        
+        buttons_layout = QHBoxLayout()
+        ok_button = QPushButton("Change")
+        cancel_button = QPushButton("Cancel")
+        
+        ok_button.clicked.connect(lambda: self.change_password(
+            username,
+            new_password_input.text(),
+            confirm_password_input.text(),
+            dialog
+        ))
+        cancel_button.clicked.connect(dialog.reject)
+        
+        buttons_layout.addWidget(ok_button)
+        buttons_layout.addWidget(cancel_button)
+        layout.addRow("", buttons_layout)
+        
+        dialog.setLayout(layout)
+        dialog.exec_()
+        
+    def change_password(self, username, new_password, confirm_password, dialog):
+        if not new_password:
+            QMessageBox.warning(dialog, "Input Error", "Password is required.")
+            return
+            
+        if new_password != confirm_password:
+            QMessageBox.warning(dialog, "Password Error", "Passwords do not match.")
+            return
+            
+        if self.user_store.update_user(username, new_password=new_password):
+            dialog.accept()
+            QMessageBox.information(self, "Success", "Password changed successfully.")
+        else:
+            QMessageBox.warning(dialog, "Update Error", "Failed to change password.")
+            
+    def delete_user(self):
+        selected_row = self.users_table.currentRow()
+        if selected_row < 0:
+            QMessageBox.warning(self, "Selection Error", "Please select a user.")
+            return
+            
+        username = self.users_table.item(selected_row, 0).text()
+        
+        # Don't allow deleting the last admin
+        users = self.user_store.get_users()
+        admins = [u for u in users if u.role == "admin"]
+        if len(admins) == 1 and admins[0].username == username:
+            QMessageBox.warning(self, "Delete Error", "Cannot delete the last admin user.")
+            return
+        
+        reply = QMessageBox.question(
+            self, "Confirm Delete", 
+            f"Are you sure you want to delete user {username}?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.user_store.delete_user(username):
+                self.load_users()
+            else:
+                QMessageBox.warning(self, "Delete Error", "Failed to delete user.")
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        
+        # Initialize data stores
+        self.user_store = UserStore()
+        self.product_store = ProductStore()
+        self.transaction_store = TransactionStore()
+        
+        # Set window properties
+        self.setWindowTitle("POS System")
+        self.setMinimumSize(1200, 800)
+        
+        # Start with login screen
+        self.show_login_screen()
+        
+    def show_login_screen(self):
+        self.login_screen = LoginScreen(self.user_store, self.on_login_success)
+        self.setCentralWidget(self.login_screen)
+        
+    def on_login_success(self, user):
+        self.current_user = user
+        self.setup_main_interface()
+        
+    def setup_main_interface(self):
+        # Create central widget with tab view
+        central_widget = QTabWidget()
+        
+        # Sales tab - available to all users
+        sales_screen = SalesScreen(self.product_store, self.transaction_store)
+        central_widget.addTab(sales_screen, "Sales")
+        
+        # Transaction history tab - available to all users
+        history_screen = TransactionHistoryScreen(self.transaction_store)
+        central_widget.addTab(history_screen, "Transaction History")
+        
+        # If user is admin, add admin tabs
+        if self.current_user.has_admin_rights():
+            # Product management tab
+            product_screen = ProductManagementScreen(self.product_store)
+            central_widget.addTab(product_screen, "Products")
+            
+            # User management tab
+            user_screen = UserManagementScreen(self.user_store)
+            central_widget.addTab(user_screen, "Users")
+        
+        self.setCentralWidget(central_widget)
+        
+        # Add logout button to status bar
+        self.statusBar().showMessage(f"Logged in as: {self.current_user.username} ({self.current_user.role})")
+        
+        logout_button = QPushButton("Logout")
+        logout_button.clicked.connect(self.logout)
+        self.statusBar().addPermanentWidget(logout_button)
+        
+    def logout(self):
+        reply = QMessageBox.question(
+            self, "Confirm Logout", 
+            "Are you sure you want to logout?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            self.show_login_screen()
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())
