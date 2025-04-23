@@ -1,0 +1,100 @@
+This code implements a complete Point of Sale (POS) system with all the required functionality:
+Core Features Implemented:
+
+User Authentication
+
+Secure login/logout functionality
+Role-based access control (admin vs. cashier)
+User management for admins (add, edit, delete users)
+
+
+Product Management
+
+Add, update, delete, and search products
+Product details include ID, name, price, stock, and category
+
+
+Sales and Checkout Module
+
+Add items to cart with quantity selection
+Update quantities or remove items from cart
+Apply discounts
+Calculate subtotals, taxes, and final amounts
+Generate and display receipts
+
+
+Inventory Management
+
+Real-time stock updates after each transaction
+Stock validation during sales
+
+
+Transaction History
+
+View all transactions
+Filter by date range
+Search by transaction ID
+View detailed transaction receipts
+
+
+
+Object-Oriented Design:
+The system follows strong OOP principles:
+
+Encapsulation
+
+Each class encapsulates its data with appropriate attributes and methods
+Access to data is controlled through well-defined interfaces
+
+
+Inheritance
+
+DataStore serves as a base class for specialized data storage classes
+
+
+Polymorphism
+
+Multiple implementations of similar operations (e.g., different ways to search and filter across classes)
+Method overriding in derived classes
+
+
+
+Key Classes:
+
+Model Classes
+
+User: Stores user credentials and roles
+Product: Manages product information and stock
+CartItem: Handles individual items in a cart
+Cart: Manages the collection of items and calculates totals
+Transaction: Records completed sales for history
+
+
+Data Storage Classes
+
+DataStore: Base class with common storage operations
+UserStore: Manages user data persistence
+ProductStore: Handles product data
+TransactionStore: Stores transaction history
+
+
+UI Classes
+
+LoginScreen: User authentication
+SalesScreen: Main POS interface
+ProductManagementScreen: Product CRUD operations
+TransactionHistoryScreen: View past transactions
+UserManagementScreen: User management
+MainWindow: Overall application control
+
+
+
+Running the Application:
+To run this POS system, you'll need:
+
+Python installed (3.6+)
+PyQt5 installed (pip install PyQt5)
+Save the code to a file named main.py
+Run it with python main.py
+
+The system starts with a login screen (default admin credentials: username "admin", password "admin"). Different features are available based on user roles to ensure proper system security.
